@@ -2,6 +2,9 @@
 
 #include <mysql/mysql.h>
 #include <fstream>
+#include <sys/sendfile.h>
+#include <netinet/tcp.h> 
+
 
 //定义http响应的一些状态信息
 const char *ok_200_title = "OK";
@@ -16,6 +19,7 @@ const char *error_500_form = "There was an unusual problem serving the request f
 
 locker m_lock;
 map<string, string> users;
+int http_conn::sendfile_threshold = 1024 * 1024; // 默认值
 
 void http_conn::initmysql_result(connection_pool *connPool)
 {
@@ -508,9 +512,7 @@ http_conn::HTTP_CODE http_conn::do_request()
     if (S_ISDIR(m_file_stat.st_mode))
         return BAD_REQUEST;
 
-    int fd = open(m_real_file, O_RDONLY);
-    m_file_address = (char *)mmap(0, m_file_stat.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
+    m_file_fd = open(m_real_file, O_RDONLY);
     return FILE_REQUEST;
 }
 void http_conn::unmap()
@@ -521,8 +523,80 @@ void http_conn::unmap()
         m_file_address = 0;
     }
 }
-bool http_conn::write()
-{
+
+bool http_conn::use_sendfile() {
+    if (bytes_to_send == 0)
+    {
+        modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
+        init();
+        return true;
+    }
+
+    int cork = 1;
+    setsockopt(m_sockfd, IPPROTO_TCP, TCP_CORK, &cork, sizeof(cork));
+
+    while (1)
+    {
+        if (bytes_have_send < m_write_idx)
+        {
+            // 先发送响应头（m_write_buf）
+            int header_len = m_write_idx - bytes_have_send;
+            int temp = ::write(m_sockfd, m_write_buf + bytes_have_send, header_len);
+
+            if (temp < 0)
+            {
+                if (errno == EAGAIN)
+                {
+                    modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+                    return true;
+                }
+                return false;
+            }
+
+            bytes_have_send += temp;
+            continue;  // 头部未发送完就继续发
+        }
+
+        // 头部已发完，发送文件部分
+        off_t offset = bytes_have_send - m_write_idx;
+        size_t remain_data = bytes_to_send - (bytes_have_send - m_write_idx);
+
+        int temp = sendfile(m_sockfd, m_file_fd, &offset, remain_data);
+
+        if (temp <= 0)
+        {
+            if (temp == -1 && errno == EAGAIN)
+            {
+                modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+                return true;
+            }
+            return false;
+        }
+
+        bytes_have_send += temp;
+
+        if (bytes_have_send >= (m_write_idx + m_file_stat.st_size))
+        {
+            // 全部数据发送完
+            int cork = 0;
+            setsockopt(m_sockfd, IPPROTO_TCP, TCP_CORK, &cork, sizeof(cork));
+            modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
+            close(m_file_fd);
+
+            if (m_linger)
+            {
+                init();
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+    }
+}
+
+bool http_conn::use_mmap() {
     int temp = 0;
 
     if (bytes_to_send == 0)
@@ -576,6 +650,15 @@ bool http_conn::write()
                 return false;
             }
         }
+    }
+}
+
+bool http_conn::write()
+{
+    if (m_file_stat.st_size >= sendfile_threshold) {
+        return use_sendfile();
+    } else {
+        return use_mmap();
     }
 }
 bool http_conn::add_response(const char *format, ...)

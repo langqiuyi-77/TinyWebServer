@@ -106,8 +106,11 @@ private:
     bool add_content_length(int content_length);
     bool add_linger();
     bool add_blank_line();
+    bool use_sendfile();
+    bool use_mmap();
 
 public:
+    static int sendfile_threshold;  // 所有连接共享
     static int m_epollfd;
     static int m_user_count;
     MYSQL *mysql;
@@ -139,6 +142,7 @@ private:
     int bytes_to_send;
     int bytes_have_send;
     char *doc_root;
+    int m_file_fd;
 
     map<string, string> m_users;
     int m_TRIGMode;

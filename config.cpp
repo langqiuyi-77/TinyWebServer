@@ -30,11 +30,13 @@ Config::Config(){
 
     //并发模型,默认是proactor
     actor_model = 0;
+
+    sendfile_threshold = 1024 * 1024;
 }
 
 void Config::parse_arg(int argc, char*argv[]){
     int opt;
-    const char *str = "p:l:m:o:s:t:c:a:";
+    const char *str = "p:l:m:o:s:t:c:a:h:";
     while ((opt = getopt(argc, argv, str)) != -1)
     {
         switch (opt)
@@ -77,6 +79,11 @@ void Config::parse_arg(int argc, char*argv[]){
         case 'a':
         {
             actor_model = atoi(optarg);
+            break;
+        }
+        case 'h':
+        {
+            sendfile_threshold = atoi(optarg);
             break;
         }
         default:
