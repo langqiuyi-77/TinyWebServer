@@ -92,6 +92,7 @@ void sort_timer_lst::del_timer(util_timer *timer)
     timer->prev->next = timer->next;
     timer->next->prev = timer->prev;
     delete timer;
+    timer = nullptr;
 }
 void sort_timer_lst::tick()
 {
@@ -217,8 +218,97 @@ int Utils::u_epollfd = 0;
 class Utils;
 void cb_func(client_data *user_data)
 {
-    epoll_ctl(Utils::u_epollfd, EPOLL_CTL_DEL, user_data->sockfd, 0);
+    if (Utils::u_epollfd) {
+        epoll_ctl(Utils::u_epollfd, EPOLL_CTL_DEL, user_data->sockfd, 0);
+    }
     assert(user_data);
     close(user_data->sockfd);
     http_conn::m_user_count--;
+}
+
+void Utils::set_event_accept(struct io_uring *ring, int sockfd, 
+    struct sockaddr *addr, socklen_t *addrlen, int flags) 
+{
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    struct conn_info *accept_info = new conn_info {
+        .fd = sockfd,
+        .event = EVENT_TYPE::ACCEPT,
+    };
+
+    io_uring_prep_accept(sqe, sockfd, (struct sockaddr*)addr, addrlen, flags);
+    // memcpy(&sqe->user_data, accept_info, sizeof(struct conn_info));
+    sqe->user_data = reinterpret_cast<__u64>(accept_info);
+}
+
+void Utils::set_event_poll(struct io_uring *ring, int sockfd) {
+    struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    struct conn_info *signal_info = new conn_info {
+        .fd = sockfd,
+        .event = EVENT_TYPE::SIGNAL,
+    };
+
+    io_uring_prep_poll_add(sqe, sockfd, POLLIN);
+    // memcpy(&sqe->user_data, signal_info, sizeof(struct conn_info));
+    sqe->user_data = reinterpret_cast<__u64>(signal_info);
+}
+
+void Utils::set_event_recv(struct io_uring *ring, int sockfd,
+				      void *buf, size_t len, int flags) {
+
+	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+	struct conn_info *recv_info = new conn_info {
+		.fd = sockfd,
+		.event = EVENT_TYPE::READ,
+	};
+	
+	io_uring_prep_recv(sqe, sockfd, buf, len, flags);
+	// memcpy(&sqe->user_data, recv_info, sizeof(struct conn_info));
+    sqe->user_data = reinterpret_cast<__u64>(recv_info);
+
+}
+
+void Utils::set_event_send(struct io_uring *ring, int sockfd, int file_fd, 
+    off_t file_size, void *buf, size_t len, int flags) {
+
+	struct io_uring_sqe *sqe = io_uring_get_sqe(ring);
+
+    struct conn_info *write_info = new conn_info {
+        .fd = sockfd,
+        .event = EVENT_TYPE::WRITE,
+        .file_fd = file_fd,
+        .file_size = file_size,
+    };
+	
+	io_uring_prep_send(sqe, sockfd, buf, len, flags);
+	// memcpy(&sqe->user_data, write_info, sizeof(struct conn_info));
+    sqe->user_data = reinterpret_cast<__u64>(write_info);
+
+}
+
+void Utils::sent_event_sendfile(io_uring* ring, int sockfd, int file_fd, off_t offset, size_t size) {
+
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        perror("pipe");
+        return;
+    }
+
+    // file → pipe[1]
+    auto* sqe = io_uring_get_sqe(ring);
+    io_uring_prep_splice(sqe, file_fd, offset, pipefd[1], -1, size, 0);
+
+    struct conn_info *info = new conn_info {
+        .fd = sockfd,
+        .event = EVENT_TYPE::SPLICE_FILE_TO_PIPE,
+        .pipe_fd = { pipefd[0], pipefd[1] },
+        .offset = offset,
+        .file_fd = file_fd,
+        .file_size = size,
+        .pipe_buf_size = 0,
+    };
+    // io_uring_sqe_set_data(sqe1, info);
+    sqe->user_data = reinterpret_cast<__u64>(info);
 }

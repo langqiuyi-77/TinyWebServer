@@ -20,9 +20,12 @@
 #include <errno.h>
 #include <sys/wait.h>
 #include <sys/uio.h>
+#include <poll.h>
+#include <liburing.h>
 
 #include <time.h>
 #include "../log/log.h"
+#include "../io_conn/conn_info.h"
 
 class util_timer;
 
@@ -89,6 +92,19 @@ public:
     void timer_handler();
 
     void show_error(int connfd, const char *info);
+
+    static void set_event_accept(struct io_uring *ring, int sockfd, 
+    struct sockaddr *addr, socklen_t *addrlen, int flags);
+
+    static void set_event_poll(struct io_uring *ring, int sockfd);
+
+    static void set_event_recv(struct io_uring *ring, int sockfd,
+				      void *buf, size_t len, int flags) ;
+
+    static void set_event_send(struct io_uring *ring, int sockfd, int file_fd, off_t file_size, 
+        void *buf, size_t len, int flags);
+
+    static void sent_event_sendfile(struct io_uring *ring, int sockfd, int file_fd, off_t offset, size_t size);
 
 public:
     static int *u_pipefd;

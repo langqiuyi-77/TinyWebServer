@@ -20,11 +20,13 @@
 #include <sys/wait.h>
 #include <sys/uio.h>
 #include <map>
+#include <liburing.h>
 
 #include "../lock/locker.h"
 #include "../CGImysql/sql_connection_pool.h"
 #include "../timer/lst_timer.h"
 #include "../log/log.h"
+#include "../io_conn/conn_info.h"
 
 class http_conn
 {
@@ -32,6 +34,8 @@ public:
     static const int FILENAME_LEN = 200;
     static const int READ_BUFFER_SIZE = 2048;
     static const int WRITE_BUFFER_SIZE = 1024;
+    static int m_actormodel;
+    static struct io_uring *ring;
     enum METHOD
     {
         GET = 0,
@@ -67,6 +71,9 @@ public:
         LINE_BAD,
         LINE_OPEN
     };
+    char m_read_buf[READ_BUFFER_SIZE];
+    char m_write_buf[WRITE_BUFFER_SIZE];
+    
 
 public:
     http_conn() {}
@@ -74,6 +81,7 @@ public:
 
 public:
     void init(int sockfd, const sockaddr_in &addr, char *, int, int, string user, string passwd, string sqlname);
+    void init();
     void close_conn(bool real_close = true);
     void process();
     bool read_once();
@@ -88,7 +96,6 @@ public:
 
 
 private:
-    void init();
     HTTP_CODE process_read();
     bool process_write(HTTP_CODE ret);
     HTTP_CODE parse_request_line(char *text);
@@ -108,6 +115,7 @@ private:
     bool add_blank_line();
     bool use_sendfile();
     bool use_mmap();
+    int set_event_send(int sockfd, void *buf, size_t len, int flags);
 
 public:
     static int sendfile_threshold;  // 所有连接共享
@@ -115,16 +123,16 @@ public:
     static int m_user_count;
     MYSQL *mysql;
     int m_state;  //读为0, 写为1
+    bool m_linger;
+    long m_read_idx;
+    int bytes_have_send;
+    int m_write_idx;
 
 private:
     int m_sockfd;
     sockaddr_in m_address;
-    char m_read_buf[READ_BUFFER_SIZE];
-    long m_read_idx;
     long m_checked_idx;
     int m_start_line;
-    char m_write_buf[WRITE_BUFFER_SIZE];
-    int m_write_idx;
     CHECK_STATE m_check_state;
     METHOD m_method;
     char m_real_file[FILENAME_LEN];
@@ -132,7 +140,6 @@ private:
     char *m_version;
     char *m_host;
     long m_content_length;
-    bool m_linger;
     char *m_file_address;
     struct stat m_file_stat;
     struct iovec m_iv[2];
@@ -140,7 +147,6 @@ private:
     int cgi;        //是否启用的POST
     char *m_string; //存储请求头数据
     int bytes_to_send;
-    int bytes_have_send;
     char *doc_root;
     int m_file_fd;
 

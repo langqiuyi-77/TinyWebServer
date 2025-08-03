@@ -4,6 +4,8 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <liburing.h>
+#include <sys/signalfd.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <errno.h>
@@ -11,13 +13,18 @@
 #include <stdlib.h>
 #include <cassert>
 #include <sys/epoll.h>
+#include <poll.h>
 
 #include "./threadpool/threadpool.h"
 #include "./http/http_conn.h"
+#include "./io_conn/conn_info.h"
 
 const int MAX_FD = 65536;           //最大文件描述符
 const int MAX_EVENT_NUMBER = 10000; //最大事件数
 const int TIMESLOT = 5;             //最小超时单位
+const int ENTRIES_LENGTH = 1024;
+const int URING_EVENTS = 1024;
+
 
 class WebServer
 {
@@ -49,7 +56,7 @@ public:
     char *m_root;
     int m_log_write;
     int m_close_log;
-    int m_actormodel;
+    int m_actormodel;      // actor 模式，proactor 和 reactor
 
     int m_pipefd[2];
     int m_epollfd;
@@ -78,5 +85,17 @@ public:
     //定时器相关
     client_data *users_timer;
     Utils utils;
+
+    // io_uring 相关
+    struct io_uring_params params;
+    struct io_uring ring;
+    struct sockaddr_in clientaddr;
+    int sfd;
+
+    void reactor_init();
+    void proactor_init();
+
+    void reactor_epoll(bool &timeout, bool &stop_server);
+    void proactor_uring(bool &timeout, bool &stop_server);
 };
 #endif

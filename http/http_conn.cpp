@@ -1,3 +1,5 @@
+#define __USE_GNU
+
 #include "http_conn.h"
 
 #include <mysql/mysql.h>
@@ -20,6 +22,9 @@ const char *error_500_form = "There was an unusual problem serving the request f
 locker m_lock;
 map<string, string> users;
 int http_conn::sendfile_threshold = 1024 * 1024; // 默认值
+
+int http_conn::m_actormodel = 0;
+struct io_uring* http_conn::ring = nullptr;
 
 void http_conn::initmysql_result(connection_pool *connPool)
 {
@@ -157,6 +162,7 @@ void http_conn::init()
     m_state = 0;
     timer_flag = 0;
     improv = 0;
+    m_file_fd = -1;
 
     memset(m_read_buf, '\0', READ_BUFFER_SIZE);
     memset(m_write_buf, '\0', WRITE_BUFFER_SIZE);
@@ -676,7 +682,7 @@ bool http_conn::add_response(const char *format, ...)
     m_write_idx += len;
     va_end(arg_list);
 
-    LOG_INFO("request:%s", m_write_buf);
+    // LOG_INFO("request:%s", m_write_buf);
 
     return true;
 }
@@ -768,12 +774,21 @@ bool http_conn::process_write(HTTP_CODE ret)
     bytes_to_send = m_write_idx;
     return true;
 }
+
 void http_conn::process()
 {
     HTTP_CODE read_ret = process_read();
     if (read_ret == NO_REQUEST)
     {
-        modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
+        if (m_actormodel == 1) {
+
+            modfd(m_epollfd, m_sockfd, EPOLLIN, m_TRIGMode);
+
+        } else {
+
+            Utils::set_event_recv(ring, m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
+
+        }
         return;
     }
     bool write_ret = process_write(read_ret);
@@ -781,5 +796,17 @@ void http_conn::process()
     {
         close_conn();
     }
-    modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+    
+    if (m_actormodel == 1) {
+
+        modfd(m_epollfd, m_sockfd, EPOLLOUT, m_TRIGMode);
+
+    } else {
+
+        // 这里只注册写 header 的事件，然后在主线程 eventloop 中当 write 事件完成后
+        // 看是否有 file_fd 如果有再注册 sendfile 事件，不能在这里立即注册 sendfile 事件
+        // 这样不能保证 header 比 sendfile 事件先写
+        Utils::set_event_send(ring, m_sockfd, m_file_fd, m_file_stat.st_size, m_write_buf, m_write_idx, 0);
+
+    }
 }

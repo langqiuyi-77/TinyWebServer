@@ -2,6 +2,14 @@ sendfile() 压测：9006 是 mmap + writev，9007 是 sendfile
 ![alt text](image.png)
 
 
+io_uring (port: 9006) 和 epoll 模拟 proactor (port: 9007)
+
+![alt text](image-1.png)
+
+
+
+
+---
 
 TinyWebServer
 ===============
